@@ -1,12 +1,12 @@
-// EquiCare automatic location + weather module
+// EquiCare automatic location + weather/environment module
 (function(){
   const PREF='equicare_weather_auto_v1';
-  const CACHE='equicare_weather_cache_v1';
+  const CACHE='equicare_weather_cache_v2';
   let busy=false;
 
   function e(id){return document.getElementById(id)}
   function readCache(){try{return JSON.parse(localStorage.getItem(CACHE)||'null')}catch(_){return null}}
-  function round(v,d=1){const p=10**d;return Math.round(Number(v)*p)/p}
+  function round(v,d=1){const n=Number(v);if(!Number.isFinite(n))return null;const p=10**d;return Math.round(n*p)/p}
   function weatherText(code){
     const c=Number(code);
     if(c===0)return 'Klar';
@@ -29,6 +29,31 @@
     if(t==='Gewitter')return '⛈️';
     return '🌤️';
   }
+  function nearestHourly(hourly,key){
+    if(!hourly||!Array.isArray(hourly.time)||!Array.isArray(hourly[key]))return null;
+    const now=Date.now();let best=0,bestDiff=Infinity;
+    hourly.time.forEach((t,i)=>{const ms=new Date(t).getTime();const diff=Math.abs(ms-now);if(Number.isFinite(ms)&&diff<bestDiff){best=i;bestDiff=diff}});
+    return hourly[key][best]??null;
+  }
+  function pollenSummary(hourly){
+    const species=[['Gräser','grass_pollen'],['Birke','birch_pollen'],['Erle','alder_pollen'],['Beifuß','mugwort_pollen'],['Ambrosia','ragweed_pollen']];
+    const values=species.map(([name,key])=>({name,value:round(nearestHourly(hourly,key),1)||0}));
+    const main=[...values].sort((a,b)=>b.value-a.value)[0]||{name:'—',value:0};
+    let level='Sehr gering';
+    if(main.value>=50)level='Hoch';else if(main.value>=10)level='Mittel';else if(main.value>=1)level='Gering';
+    return {values,main:main.name,max:main.value,level};
+  }
+  function insectWeather(temp,hum,wind,rain){
+    const t=Number(temp),h=Number(hum),w=Number(wind),r=Number(rain);
+    let score=0;
+    if(t>=12&&t<=32)score++;
+    if(t>=18&&t<=28)score++;
+    if(h>=55)score++;
+    if(w<=15)score++;
+    if(r>1)score-=2;else if(r>.2)score--;
+    score=Math.max(0,Math.min(4,score));
+    return {score,label:['Sehr gering','Gering','Mittel','Hoch','Sehr hoch'][score]};
+  }
 
   function upsertTodayWeather(w){
     const h=activeHorse();if(!h)return;
@@ -42,6 +67,13 @@
       weatherText:weatherText(w.weather_code),
       wind:round(w.wind_speed_10m,1),
       precipitation:round(w.precipitation,1),
+      uv:round(w.uv_index,1),
+      pollenMax:round(w.pollen?.max,1),
+      pollenMain:w.pollen?.main||'',
+      pollenLevel:w.pollen?.level||'',
+      pollenValues:w.pollen?.values||[],
+      insectWeatherScore:Number(w.insectWeather?.score??0),
+      insectWeatherRisk:w.insectWeather?.label||'',
       weatherAuto:true,
       weatherUpdated:new Date().toISOString(),
       location:{lat:round(w.lat,3),lon:round(w.lon,3)}
@@ -60,21 +92,26 @@
 
   async function refresh(userInitiated=true){
     if(busy)return;busy=true;
-    const status=e('weatherAutoStatus');if(status)status.textContent='Standort und Wetter werden geladen …';
+    const status=e('weatherAutoStatus');if(status)status.textContent='Standort und Umweltwerte werden geladen …';
     try{
       const pos=await getPosition();
       const lat=pos.coords.latitude,lon=pos.coords.longitude;
-      const url=`https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,precipitation&temperature_unit=celsius&wind_speed_unit=kmh&precipitation_unit=mm&timezone=auto`;
-      const res=await fetch(url,{cache:'no-store'});
-      if(!res.ok)throw new Error('Wetterdienst nicht erreichbar.');
-      const data=await res.json();
+      const weatherUrl=`https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,precipitation&hourly=uv_index&forecast_days=1&temperature_unit=celsius&wind_speed_unit=kmh&precipitation_unit=mm&timezone=auto`;
+      const pollenUrl=`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&hourly=alder_pollen,birch_pollen,grass_pollen,mugwort_pollen,ragweed_pollen&forecast_days=1&timezone=auto`;
+      const [weatherRes,pollenRes]=await Promise.all([fetch(weatherUrl,{cache:'no-store'}),fetch(pollenUrl,{cache:'no-store'}).catch(()=>null)]);
+      if(!weatherRes.ok)throw new Error('Wetterdienst nicht erreichbar.');
+      const data=await weatherRes.json();
       if(!data.current)throw new Error('Keine aktuellen Wetterdaten empfangen.');
-      const cache={...data.current,lat,lon,updated:new Date().toISOString()};
+      let pollen={values:[],main:'—',max:0,level:'Nicht verfügbar'};
+      if(pollenRes&&pollenRes.ok){try{const pd=await pollenRes.json();pollen=pollenSummary(pd.hourly)}catch(_){}}
+      const uv=round(nearestHourly(data.hourly,'uv_index'),1);
+      const insectWeather=insectWeather(data.current.temperature_2m,data.current.relative_humidity_2m,data.current.wind_speed_10m,data.current.precipitation);
+      const cache={...data.current,uv_index:uv,pollen,insectWeather,lat,lon,updated:new Date().toISOString()};
       localStorage.setItem(CACHE,JSON.stringify(cache));
       localStorage.setItem(PREF,'1');
       upsertTodayWeather(cache);
       if(typeof render==='function'&&(R==='today'||R==='quick'||R==='history'))render();
-      if(typeof note==='function')note('Standort & Wetter aktualisiert');
+      if(typeof note==='function')note('Wetter & Umwelt aktualisiert');
     }catch(err){
       console.error(err);
       let msg='Wetter konnte nicht automatisch geladen werden.';
@@ -91,9 +128,10 @@
     const enabled=localStorage.getItem(PREF)==='1';
     const d=activeHorse()?activeHorse().daily.find(x=>x.date===todayISO()):null;
     const w=d&&d.weatherAuto?d:c;
-    const main=w?`${weatherIcon(w.weatherCode??w.weather_code)} ${w.temp??w.temperature_2m} °C · ${w.hum??w.relative_humidity_2m}%`:'Noch nicht aktiviert';
-    const extra=w?`${weatherText(w.weatherCode??w.weather_code)} · Wind ${w.wind??w.wind_speed_10m??'—'} km/h${Number(w.precipitation)>0?' · '+w.precipitation+' mm':''}`:'EquiCare kann nach deiner Freigabe den Handy-Standort verwenden.';
-    return `<div class="card weather-auto-card"><div class="row between"><div><b>📍 Automatisches Wetter</b><div id="weatherAutoStatus" class="sub">${main}</div></div><button class="btn soft" type="button" onclick="EquiWeather.refresh(true)">${enabled?'Aktualisieren':'Aktivieren'}</button></div><div class="sub" style="margin-top:7px">${extra}</div>${enabled?'<div class="weather-ok">✓ Standortfreigabe aktiv · Wetter wird beim Öffnen automatisch aktualisiert</div>':''}</div>`;
+    if(!w){return `<div class="card env-card"><div class="row between"><div><b>🌤️ Wetter & Umwelt</b><div id="weatherAutoStatus" class="sub">Standort noch nicht aktiviert</div></div><button class="btn soft" type="button" onclick="EquiWeather.refresh(true)">Aktivieren</button></div><div class="sub env-hint">Einmal Standort freigeben, danach aktualisiert EquiCare die Werte automatisch.</div></div>`}
+    const temp=w.temp??w.temperature_2m,hum=w.hum??w.relative_humidity_2m,wind=w.wind??w.wind_speed_10m,rain=w.precipitation??0,uv=w.uv??w.uv_index,pollenMax=w.pollenMax??w.pollen?.max??0,pollenMain=w.pollenMain??w.pollen?.main??'—',pollenLevel=w.pollenLevel??w.pollen?.level??'—',insect=w.insectWeatherRisk??w.insectWeather?.label??'—';
+    const code=w.weatherCode??w.weather_code;
+    return `<div class="card env-card"><div class="row between env-head"><div><b>${weatherIcon(code)} Wetter & Umwelt</b><div id="weatherAutoStatus" class="sub">${weatherText(code)} · automatisch vom Standort</div></div><button class="env-refresh" type="button" onclick="EquiWeather.refresh(true)" aria-label="Wetter aktualisieren">↻</button></div><div class="env-grid"><div><small>Temperatur</small><b>${temp??'—'} °C</b></div><div><small>Luftfeuchte</small><b>${hum??'—'} %</b></div><div><small>UV-Index</small><b>${uv??'—'}</b></div><div><small>Wind</small><b>${wind??'—'} km/h</b></div></div><details class="env-details"><summary>Weitere Umweltwerte <span>anzeigen</span></summary><div class="env-detail-grid"><div><span>🌧️ Regen</span><b>${rain??0} mm</b></div><div><span>🌾 Pollen</span><b>${pollenLevel}</b><small>${pollenMain}${Number(pollenMax)>0?' · '+pollenMax+' /m³':''}</small></div><div><span>🪰 Insekten-Wetter</span><b>${insect}</b><small>aus Wetterwerten geschätzt</small></div><div><span>📍 Standort</span><b>Aktiv</b><small>automatische Aktualisierung</small></div></div><div class="env-disclaimer">Pollen- und Insektenwerte sind modellierte bzw. geschätzte Umweltwerte und keine medizinische Bewertung.</div></details></div>`;
   }
 
   const oldToday=screens.today;
