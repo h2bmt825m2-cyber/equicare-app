@@ -105,8 +105,8 @@
       let pollen={values:[],main:'—',max:0,level:'Nicht verfügbar'};
       if(pollenRes&&pollenRes.ok){try{const pd=await pollenRes.json();pollen=pollenSummary(pd.hourly)}catch(_){}}
       const uv=round(nearestHourly(data.hourly,'uv_index'),1);
-      const insectWeather=insectWeather(data.current.temperature_2m,data.current.relative_humidity_2m,data.current.wind_speed_10m,data.current.precipitation);
-      const cache={...data.current,uv_index:uv,pollen,insectWeather,lat,lon,updated:new Date().toISOString()};
+      const insectWx=insectWeather(data.current.temperature_2m,data.current.relative_humidity_2m,data.current.wind_speed_10m,data.current.precipitation);
+      const cache={...data.current,uv_index:uv,pollen,insectWeather:insectWx,lat,lon,updated:new Date().toISOString()};
       localStorage.setItem(CACHE,JSON.stringify(cache));
       localStorage.setItem(PREF,'1');
       upsertTodayWeather(cache);
