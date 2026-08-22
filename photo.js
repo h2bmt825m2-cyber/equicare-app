@@ -1,0 +1,46 @@
+(()=>{
+const DB_NAME='equicare_media';
+const DB_VERSION=1;
+const STORE='photos';
+let photoUrls=[];
+
+function openDB(){return new Promise((resolve,reject)=>{const r=indexedDB.open(DB_NAME,DB_VERSION);r.onupgradeneeded=()=>{const db=r.result;if(!db.objectStoreNames.contains(STORE)){const s=db.createObjectStore(STORE,{keyPath:'id'});s.createIndex('horseRegion',['horseId','region'],{unique:false});s.createIndex('createdAt','createdAt',{unique:false});}};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}
+async function dbPut(v){const db=await openDB();return new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).put(v);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);});}
+async function dbDelete(id){const db=await openDB();return new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).delete(id);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);});}
+async function dbAll(){const db=await openDB();return new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readonly');const r=tx.objectStore(STORE).getAll();r.onsuccess=()=>resolve(r.result||[]);r.onerror=()=>reject(r.error);});}
+function horseKey(){try{const h=activeHorse();return h.id||h.name||'horse';}catch(e){return 'horse';}}
+function horseName(){try{return activeHorse().name||'Pferd';}catch(e){return 'Pferd';}}
+function regionName(){try{return zone||'Unbekannt';}catch(e){return 'Unbekannt';}}
+function currentSeverity(){try{return Number((activeHorse().zones[regionName()]||{}).s||0);}catch(e){return 0;}}
+function currentZoneNote(){try{return (activeHorse().zones[regionName()]||{}).n||'';}catch(e){return '';}}
+function sevLabel(s){return ['Kein Juckreiz','Leicht','Stark','Extrem'][Number(s)||0];}
+function uidPhoto(){return 'ph_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);}
+function fmtDate(iso){const d=new Date(iso);return d.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'2-digit'})+' · '+d.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});}
+function cleanupUrls(){photoUrls.forEach(u=>URL.revokeObjectURL(u));photoUrls=[];}
+function urlFor(blob){const u=URL.createObjectURL(blob);photoUrls.push(u);return u;}
+
+function compressImage(file,max=1600,quality=.84){return new Promise((resolve,reject)=>{const img=new Image();const u=URL.createObjectURL(file);img.onload=()=>{let w=img.naturalWidth,h=img.naturalHeight;const scale=Math.min(1,max/Math.max(w,h));w=Math.max(1,Math.round(w*scale));h=Math.max(1,Math.round(h*scale));const c=document.createElement('canvas');c.width=w;c.height=h;const ctx=c.getContext('2d');ctx.drawImage(img,0,0,w,h);URL.revokeObjectURL(u);c.toBlob(b=>b?resolve(b):reject(new Error('Bild konnte nicht gespeichert werden')),'image/jpeg',quality);};img.onerror=()=>{URL.revokeObjectURL(u);reject(new Error('Bild konnte nicht geöffnet werden'));};img.src=u;});}
+
+async function storePhoto(file){if(!file)return;try{note('Foto wird gespeichert …');const blob=await compressImage(file);const rec={id:uidPhoto(),horseId:horseKey(),horseName:horseName(),region:regionName(),createdAt:new Date().toISOString(),severity:currentSeverity(),zoneNote:currentZoneNote(),blob};await dbPut(rec);note('Foto automatisch gespeichert');await renderRegionPhotos();}catch(e){console.error(e);note('Foto konnte nicht gespeichert werden');}}
+
+window.openRegionCamera=function(){const el=document.getElementById('eqCameraInput');if(el){el.value='';el.click();}};
+window.openRegionLibrary=function(){const el=document.getElementById('eqLibraryInput');if(el){el.value='';el.click();}};
+window.eqPhotoChosen=function(input){const f=input.files&&input.files[0];if(f)storePhoto(f);};
+window.choosePhotoRegion=function(r){try{zone=r;const h=activeHorse();h.zones=h.zones||{};if(!h.zones[r])h.zones[r]={s:0,n:'',sy:[]};save();go('zone');}catch(e){console.error(e);}};
+window.deleteRegionPhoto=async function(id){if(!confirm('Dieses Foto wirklich löschen?'))return;await dbDelete(id);note('Foto gelöscht');renderRegionPhotos();};
+window.openRegionPhoto=async function(id){const a=await dbAll();const p=a.find(x=>x.id===id);if(!p)return;const u=urlFor(p.blob);modal.innerHTML=`<div class="sheetbg" onclick="if(event.target===this)closeSheet()"><div class="sheet photo-view-sheet"><div class="row between"><div><h2 style="margin:0">${p.region}</h2><div class="sub">${fmtDate(p.createdAt)} · ${sevLabel(p.severity)}</div></div><button class="back" onclick="closeSheet()">×</button></div><img class="photo-full" src="${u}" alt="${p.region}"><div class="card flat"><b>Dokumentation zum Aufnahmezeitpunkt</b><div class="sub" style="margin-top:6px">${p.zoneNote||'Keine Notiz hinterlegt.'}</div></div><button class="btn outline full photo-delete" onclick="deleteRegionPhoto('${p.id}');closeSheet()">Foto löschen</button></div></div>`;};
+window.openPhotoCompare=async function(){const all=(await dbAll()).filter(p=>p.horseId===horseKey()&&p.region===regionName()).sort((a,b)=>a.createdAt.localeCompare(b.createdAt));if(all.length<2){note('Mindestens 2 Bilder für Vergleich nötig');return;}const first=all[0],last=all[all.length-1],u1=urlFor(first.blob),u2=urlFor(last.blob);modal.innerHTML=`<div class="sheetbg" onclick="if(event.target===this)closeSheet()"><div class="sheet compare-sheet"><div class="row between"><div><h2 style="margin:0">Bildvergleich</h2><div class="sub">${regionName()} · ${horseName()}</div></div><button class="back" onclick="closeSheet()">×</button></div><div class="compare-grid"><div><div class="compare-label">Früher</div><img src="${u1}"><b>${fmtDate(first.createdAt)}</b><div class="sub">${sevLabel(first.severity)}</div></div><div><div class="compare-label">Aktuell</div><img src="${u2}"><b>${fmtDate(last.createdAt)}</b><div class="sub">${sevLabel(last.severity)}</div></div></div><div class="card flat"><b>Verlauf</b><div class="sub" style="margin-top:5px">${all.length} Fotos für diesen Bereich gespeichert. Der Vergleich zeigt automatisch die älteste und die neueste Aufnahme.</div></div></div></div>`;};
+
+async function renderRegionPhotos(){const holder=document.getElementById('regionPhotoGallery');const count=document.getElementById('regionPhotoCount');const compare=document.getElementById('regionComparePreview');if(!holder)return;cleanupUrls();const all=(await dbAll()).filter(p=>p.horseId===horseKey()&&p.region===regionName()).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));if(count)count.textContent=all.length+' '+(all.length===1?'Foto':'Fotos');if(!all.length){holder.innerHTML='<div class="photo-empty">Noch keine Bilder für diesen Bereich.<br><span>Das erste Foto wird nach der Aufnahme automatisch gespeichert.</span></div>';if(compare)compare.innerHTML='';return;}holder.innerHTML=all.slice(0,12).map(p=>`<button class="photo-thumb" onclick="openRegionPhoto('${p.id}')"><img src="${urlFor(p.blob)}" alt="${p.region}"><span>${fmtDate(p.createdAt)}</span><small>${sevLabel(p.severity)}</small></button>`).join('');if(compare){if(all.length>=2){const newest=all[0],oldest=all[all.length-1];compare.innerHTML=`<button class="compare-card" onclick="openPhotoCompare()"><div class="compare-mini"><img src="${urlFor(oldest.blob)}"><span>→</span><img src="${urlFor(newest.blob)}"></div><div><b>Vorher / Nachher vergleichen</b><span>${fmtDate(oldest.createdAt)} → ${fmtDate(newest.createdAt)}</span></div><strong>›</strong></button>`;}else compare.innerHTML='<div class="photo-hint">Noch ein weiteres Foto aufnehmen, dann ist der Vorher/Nachher-Vergleich verfügbar.</div>';}}
+window.renderRegionPhotos=renderRegionPhotos;
+
+const originalZone=screens.zone;
+screens.zone=function(){return originalZone()+`<div class="card photo-doc"><div class="row between"><div><b>📷 Fotodokumentation</b><div class="sub">${regionName()} · ${horseName()}</div></div><span class="badge" id="regionPhotoCount">0 Fotos</span></div><div class="photo-actions"><button class="btn primary" onclick="openRegionCamera()">📷 Kamera öffnen</button><button class="btn soft" onclick="openRegionLibrary()">🖼️ Mediathek</button></div><input id="eqCameraInput" class="photo-input" type="file" accept="image/*" capture="environment" onchange="eqPhotoChosen(this)"><input id="eqLibraryInput" class="photo-input" type="file" accept="image/*" onchange="eqPhotoChosen(this)"><div id="regionComparePreview" style="margin-top:10px"></div><div class="photo-section-title">Gespeicherte Vergleichsbilder</div><div class="photo-gallery" id="regionPhotoGallery"><div class="photo-empty">Bilder werden geladen …</div></div></div>`;};
+
+const originalMap=screens.map;
+screens.map=function(){return originalMap()+`<div class="card"><b>Weitere Fotobereiche</b><div class="sub" style="margin-top:3px">Für Bereiche, die auf der Seitenansicht schwer zu treffen sind.</div><div class="region-chips"><button onclick="choosePhotoRegion('Schopf')">Schopf</button><button onclick="choosePhotoRegion('Mähne')">Mähne</button><button onclick="choosePhotoRegion('Schweif')">Schweif</button><button onclick="choosePhotoRegion('Bauch')">Bauch</button><button onclick="choosePhotoRegion('Bauchnaht')">Bauchnaht</button></div></div>`;};
+
+const originalRender=render;
+render=function(){originalRender();if(R==='zone')setTimeout(renderRegionPhotos,0);};
+
+})();
