@@ -1,0 +1,39 @@
+{
+  "name": "EquiCare – Dein Pferd. Deine Daten.",
+  "short_name": "EquiCare",
+  "description": "Gesundheits-, Pflege- und Verlaufsdokumentation für Pferde.",
+  "lang": "de-DE",
+  "id": "./",
+  "start_url": "./?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f7f5ff",
+  "theme_color": "#5138ad",
+  "categories": ["health", "lifestyle", "utilities"],
+  "icons": [
+    {
+      "src": "./equicare-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Heute",
+      "short_name": "Heute",
+      "url": "./?source=pwa&view=today"
+    },
+    {
+      "name": "Pferde",
+      "short_name": "Pferde",
+      "url": "./?source=pwa&view=horses"
+    },
+    {
+      "name": "Kalender",
+      "short_name": "Kalender",
+      "url": "./?source=pwa&view=calendar"
+    }
+  ]
+}
